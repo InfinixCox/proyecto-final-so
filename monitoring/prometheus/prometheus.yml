@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 5s        # cada cuanto lee las metricas
+  evaluation_interval: 5s    # cada cuanto evalua las reglas de alertas
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  # Prometheus se mide a si mismo
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Los tres backends, leidos directamente (NO a traves de Nginx, porque
+  # Nginx mezclaria las cifras de los tres)
+  - job_name: backends
+    static_configs:
+      - targets: ["backend1:5000", "backend2:5000", "backend3:5000"]
+
+  # Nginx, a traves de su exportador (traduce stub_status)
+  - job_name: nginx
+    static_configs:
+      - targets: ["nginx-exporter:9113"]
+
+  # Uso de recursos de cada contenedor
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]

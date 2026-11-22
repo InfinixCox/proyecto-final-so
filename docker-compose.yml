@@ -1,0 +1,158 @@
+# Proyecto final de Sistemas Operativos
+# Infraestructura con Nginx, 3 backends, Prometheus, Grafana, nginx-exporter y cAdvisor
+name: proyecto-so
+
+services:
+  # ------------------------------------------------------------ backends
+  # Los 3 backends se construyen desde la misma carpeta y usan la misma imagen.
+  # Cada contenedor se identifica con su variable de entorno INSTANCE.
+  backend1:
+    build: ./backend
+    image: proyecto-so-backend:1.0
+    container_name: backend-1
+    environment:
+      INSTANCE: "1"
+    restart: unless-stopped
+    networks: [infra-net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  backend2:
+    build: ./backend
+    image: proyecto-so-backend:1.0
+    container_name: backend-2
+    environment:
+      INSTANCE: "2"
+    restart: unless-stopped
+    networks: [infra-net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  backend3:
+    build: ./backend
+    image: proyecto-so-backend:1.0
+    container_name: backend-3
+    environment:
+      INSTANCE: "3"
+    restart: unless-stopped
+    networks: [infra-net]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # --------------------------------------------------------- proxy inverso
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: nginx-proxy
+    restart: unless-stopped
+    ports:
+      - "${NGINX_PORT:-8080}:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks: [infra-net]
+    depends_on:
+      backend1:
+        condition: service_healthy
+      backend2:
+        condition: service_healthy
+      backend3:
+        condition: service_healthy
+
+  # Traduce el stub_status de Nginx (puerto interno 8088) al formato de Prometheus
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:1.4.2
+    container_name: nginx-exporter
+    restart: unless-stopped
+    command:
+      - "--nginx.scrape-uri=http://nginx:8088/stub_status"
+    networks: [infra-net]
+    depends_on:
+      - nginx
+
+  # ------------------------------------------------------------ monitoreo
+  # Mide CPU, memoria, red y disco de cada contenedor
+  cadvisor:
+    image: ghcr.io/google/cadvisor:0.56.2
+    container_name: cadvisor
+    cgroup: host            # ver los cgroups del anfitrión (cgroup v2)
+    pid: host               # ver los procesos de la VM de Docker Desktop
+    restart: unless-stopped
+    command:
+      - "--housekeeping_interval=5s"
+      - "--docker_only=true"
+      - "--containerd=/proc/1/root/run/containerd/containerd.sock" # socket de containerd dentro de la VM de Docker Desktop
+    ports:
+      - "${CADVISOR_PORT:-8081}:8080"
+    volumes:
+      # - /:/rootfs:ro       # desactivado: en Docker Desktop + WSL apuntaba al Ubuntu, no a la VM
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true
+    networks: [infra-net]
+
+  prometheus:
+    image: prom/prometheus:v3.13.5
+    container_name: prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./monitoring/prometheus:/etc/prometheus:ro
+      - prometheus_data:/prometheus      # los datos sobreviven a un reinicio
+    networks: [infra-net]
+    depends_on:
+      - backend1
+      - backend2
+      - backend3
+      - nginx-exporter
+      - cadvisor
+
+  grafana:
+    image: grafana/grafana:12.4.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    environment:
+      # Usuario para editar: admin / admin
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      # Cualquiera puede VER los dashboards sin iniciar sesion (solo laboratorio)
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      # Al abrir Grafana se ve directamente nuestro dashboard
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/infraestructura.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana    # usuarios y cambios sobreviven a un reinicio
+    networks: [infra-net]
+    depends_on:
+      - prometheus
+
+# Red propia: los contenedores se encuentran por el nombre del servicio
+networks:
+  infra-net:
+    name: proyecto-so-net
+    driver: bridge
+
+# Volumenes con nombre para la persistencia de datos
+volumes:
+  prometheus_data:
+  grafana_data:
